@@ -1,0 +1,129 @@
+trigger: none
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  # Common Variables
+  azureSubscription: 'rg-optevo-stg'
+  resourceGroup: 'rg-optevo-stg'
+  aksCluster: 'arckoptevocusstg'
+  namespace: 'efklog-optevo-stg'
+  Environment: 'stg'
+
+stages:
+- stage: DeployEFK
+  displayName: Deploy EFK Stack to AKS
+  jobs:
+  - job: Deploy
+    displayName: Apply Kubernetes Manifests
+    steps:
+    - checkout: self
+
+    # Replace tokens in all manifest files before applying
+    - task: replacetokens@5
+      displayName: 'Replace tokens in YAML files'
+      inputs:
+        rootDirectory: '$(System.DefaultWorkingDirectory)'
+        targetFiles: |
+          **/*.yml
+          **/*.yaml
+        encoding: 'auto'
+        tokenPattern: 'azpipelines'
+        writeBOM: true
+        actionOnMissing: 'warn'
+        keepToken: false
+        actionOnNoFiles: 'continue'
+        enableTransforms: false
+        enableRecursion: false
+        useLegacyPattern: false
+        enableTelemetry: true
+
+    - task: AzureCLI@2
+      displayName: 'Get AKS credentials'
+      inputs:
+        azureSubscription: '$(azureSubscription)'
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          az aks get-credentials \
+            --resource-group $(resourceGroup) \
+            --name $(aksCluster) \
+            --overwrite-existing
+
+    - task: Kubernetes@1
+      displayName: 'Apply Namespace'
+      inputs:
+        connectionType: 'Azure Resource Manager'
+        azureSubscriptionEndpoint: '$(azureSubscription)'
+        azureResourceGroup: '$(resourceGroup)'
+        kubernetesCluster: '$(aksCluster)'
+        command: 'apply'
+        arguments: '-f 01_Namespace.yml'
+        secretType: 'generic'
+
+    - task: Kubernetes@1
+      displayName: 'Apply Elasticsearch Credentials Secret'
+      inputs:
+        connectionType: 'Azure Resource Manager'
+        azureSubscriptionEndpoint: '$(azureSubscription)'
+        azureResourceGroup: '$(resourceGroup)'
+        kubernetesCluster: '$(aksCluster)'
+        command: 'apply'
+        arguments: '-f 00_elastic-credentials.yaml -n $(namespace)'
+        secretType: 'generic'
+
+    - task: Kubernetes@1
+      displayName: 'Deploy Elasticsearch Service and StatefulSet'
+      inputs:
+        connectionType: 'Azure Resource Manager'
+        azureSubscriptionEndpoint: '$(azureSubscription)'
+        azureResourceGroup: '$(resourceGroup)'
+        kubernetesCluster: '$(aksCluster)'
+        command: 'apply'
+        arguments: '-f 02_ElasticSearch_Service.yaml -f 03_ElasticSearch_StatefulSet.yaml -n $(namespace)'
+        secretType: 'generic'
+
+    - task: Kubernetes@1
+      displayName: 'Deploy Fluentd RBAC'
+      inputs:
+        connectionType: 'Azure Resource Manager'
+        azureSubscriptionEndpoint: '$(azureSubscription)'
+        azureResourceGroup: '$(resourceGroup)'
+        kubernetesCluster: '$(aksCluster)'
+        command: 'apply'
+        arguments: '-f 00_Fluentd_rbac.yml'
+        secretType: 'generic'
+
+    - task: Kubernetes@1
+      displayName: 'Deploy Fluentd ConfigMap and DaemonSet'
+      inputs:
+        connectionType: 'Azure Resource Manager'
+        azureSubscriptionEndpoint: '$(azureSubscription)'
+        azureResourceGroup: '$(resourceGroup)'
+        kubernetesCluster: '$(aksCluster)'
+        command: 'apply'
+        arguments: '-f 04_Fluentd_ConfigMap.yaml -f 05_Fluend_DaemonSet.yaml -n $(namespace)'
+        secretType: 'generic'
+
+    - task: Kubernetes@1
+      displayName: 'Deploy Kibana Deployment and Service'
+      inputs:
+        connectionType: 'Azure Resource Manager'
+        azureSubscriptionEndpoint: '$(azureSubscription)'
+        azureResourceGroup: '$(resourceGroup)'
+        kubernetesCluster: '$(aksCluster)'
+        command: 'apply'
+        arguments: '-f 06_Kibana_Deployment.yaml -f 07_Kibana_Service.yaml -n $(namespace)'
+        secretType: 'generic'
+
+    - task: Kubernetes@1
+      displayName: 'Apply Kibana Config'
+      inputs:
+        connectionType: 'Azure Resource Manager'
+        azureSubscriptionEndpoint: '$(azureSubscription)'
+        azureResourceGroup: '$(resourceGroup)'
+        kubernetesCluster: '$(aksCluster)'
+        command: 'apply'
+        arguments: '-f 00_Kibana.yml'
+        secretType: 'generic'
